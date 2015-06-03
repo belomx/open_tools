@@ -34,6 +34,7 @@ import com.google.gerrit.extensions.common.SubmitType;
 import com.google.gerrit.reviewdb.client.Account;
 import com.google.gerrit.reviewdb.client.Branch;
 import com.google.gerrit.reviewdb.client.Change;
+import com.google.gerrit.reviewdb.client.Change.Status;
 import com.google.gerrit.reviewdb.client.ChangeMessage;
 import com.google.gerrit.reviewdb.client.PatchSet;
 import com.google.gerrit.reviewdb.client.PatchSetApproval;
@@ -49,6 +50,7 @@ import com.google.gerrit.server.account.AccountCache;
 import com.google.gerrit.server.extensions.events.GitReferenceUpdated;
 import com.google.gerrit.server.git.strategy.SubmitStrategy;
 import com.google.gerrit.server.git.strategy.SubmitStrategyFactory;
+import com.google.gerrit.server.git.validators.CommitValidators;
 import com.google.gerrit.server.git.validators.MergeValidationException;
 import com.google.gerrit.server.git.validators.MergeValidators;
 import com.google.gerrit.server.index.ChangeIndexer;
@@ -95,6 +97,8 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.Set;
 
 /**
@@ -232,6 +236,7 @@ public class MergeOp {
   }
 
   public void merge() throws MergeException, NoSuchChangeException, IOException {
+    System.out.println("MergeOP merge starts");
     setDestProject();
     try {
       openSchema();
@@ -453,6 +458,9 @@ public class MergeOp {
     final ListMultimap<SubmitType, Change> toSubmit =
         ArrayListMultimap.create();
 
+    System.out.println("MergeOp validateChangeList starts submitted = "+submitted.toString());
+    System.out.println("MergeOp validateChangeList starts commits = "+commits.toString());
+
     final Map<String, Ref> allRefs;
     try {
       allRefs = repo.getRefDatabase().getRefs(ALL);
@@ -474,6 +482,7 @@ public class MergeOp {
         toUpdate.add(chg);
         continue;
       }
+      System.out.println("MergeOp validateChangeList works1 commits = "+commits.toString());
 
       final PatchSet ps;
       try {
@@ -489,6 +498,8 @@ public class MergeOp {
         continue;
       }
 
+      System.out.println("MergeOp validateChangeList works2 commits = "+commits.toString());
+
       final String idstr = ps.getRevision().get();
       final ObjectId id;
       try {
@@ -499,6 +510,8 @@ public class MergeOp {
         toUpdate.add(chg);
         continue;
       }
+
+      System.out.println("MergeOp validateChangeList works3 commits = "+commits.toString());
 
       if (!tips.contains(id)) {
         // TODO Technically the proper way to do this test is to use a
@@ -516,6 +529,8 @@ public class MergeOp {
         continue;
       }
 
+      System.out.println("MergeOp validateChangeList works4 commits = "+commits.toString());
+
       final CodeReviewCommit commit;
       try {
         commit = (CodeReviewCommit) rw.parseCommit(id);
@@ -526,6 +541,47 @@ public class MergeOp {
         toUpdate.add(chg);
         continue;
       }
+      
+      //[DQF] - my changes start
+      try {
+        final List<String> idList = commit.getFooterLines(CommitValidators.DEPENDS_ON);
+        final Pattern p = Pattern.compile("^(.*)~(.*)~(I[0-9a-f]{8,}.*)$");
+        for (int i = 0; i < idList.size(); i++) {
+            String dependsOn = idList.get(i).trim();
+            Matcher m = p.matcher(dependsOn);
+            if (m.matches()) {
+                String project = m.group(1);
+                String branch = m.group(2);
+                Change.Key changeKey = Change.Key.parse(m.group(3));
+                List<Change> changes = db.changes().byKey(changeKey).toList();
+                for (Change change : changes) {
+                     if ((change.getDest().get().equals(branch)
+                        || change.getDest().getShortName().equals(branch))
+                        && (change.getProject().get().equals(project))
+                        && (change.getStatus() != Status.MERGED || change.getStatus() != Status.ABANDONED)) {
+                          System.out.println("MergeOp validateChangeList commit set missing dependency to commit = "+commit.toString());
+                          //commit.setStatusCode(CommitMergeStatus.MISSING_DEPENDENCY);
+                          commits.put(changeId,
+                                      CodeReviewCommit.error(new MergeValidationException(CommitMergeStatus.DEPENDENCY_NOT_SUBMITTED).getStatus()));
+                          toUpdate.add(chg);
+                          continue;
+                     }
+                }
+            }
+         }
+
+      } catch (Exception e) {
+        log.error("Invalid commit " + id.name() + " on " + chg.getKey(), e);
+        commits.put(changeId, CodeReviewCommit
+            .error(CommitMergeStatus.REVISION_GONE));
+        toUpdate.add(chg);
+        continue;
+      }
+      //[DQF] - my changes end
+
+      System.out.println("MergeOp validateChangeList commit footer = "+commit.getFooterLines(CommitValidators.DEPENDS_ON).toString());
+      System.out.println("MergeOp validateChangeList changeId keyId = "+changeId.toString());
+      System.out.println("MergeOp validateChangeList works5 commits = "+commits.toString());
 
       try {
         commit.setControl(changeControlFactory.controlFor(chg,
@@ -545,7 +601,11 @@ public class MergeOp {
         continue;
       }
 
+      System.out.println("MergeOp validateChangeList works6 commits = "+commits.toString());
+
       commits.put(changeId, commit);
+
+      System.out.println("MergeOp validateChangeList works7 commits = "+commits.toString());
 
       if (branchTip != null) {
         // If this commit is already merged its a bug in the queuing code
@@ -567,6 +627,8 @@ public class MergeOp {
         }
       }
 
+      System.out.println("MergeOp validateChangeList works8 toSubmit = "+toSubmit.toString());
+
       SubmitType submitType = getSubmitType(commit.getControl(), ps);
       if (submitType == null) {
         commits.put(changeId,
@@ -574,11 +636,17 @@ public class MergeOp {
         toUpdate.add(chg);
         continue;
       }
+      
+
+      System.out.println("MergeOp validateChangeList works9 commits = "+commits.toString());
 
       commit.add(canMergeFlag);
       toMerge.put(submitType, commit);
       toSubmit.put(submitType, chg);
+      System.out.println("MergeOp validateChangeList change = "+chg.getId());
     }
+    System.out.println("MergeOp validateChangeList final commits = "+commits.toString());
+    System.out.println("MergeOp validateChangeList toSubmit = "+toSubmit.toString());
     return toSubmit;
   }
 
@@ -679,6 +747,7 @@ public class MergeOp {
       final String txt = s.getMessage();
 
       try {
+        System.out.println("Merge OP updateChangeStatus = "+s.toString());
         switch (s) {
           case CLEAN_MERGE:
             setMerged(c, message(c, txt));
@@ -707,6 +776,10 @@ public class MergeOp {
             break;
 
           case MISSING_DEPENDENCY:
+            potentiallyStillSubmittable.add(commit);
+            break;
+
+          case DEPENDENCY_NOT_SUBMITTED:
             potentiallyStillSubmittable.add(commit);
             break;
 

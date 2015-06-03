@@ -36,6 +36,9 @@ public enum CommitMergeStatus {
   MISSING_DEPENDENCY(""),
 
   /** */
+  DEPENDENCY_NOT_SUBMITTED("Dependent commit needs to be merged before you can merge this one."),
+
+  /** */
   NO_PATCH_SET(""),
 
   /** */
